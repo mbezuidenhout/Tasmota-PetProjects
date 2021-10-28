@@ -774,6 +774,9 @@ void ResponseAppendFeatures(void)
 #if defined(USE_I2C) && defined(USE_HM330X)
     feature8 |= 0x00008000;
 #endif
+#if defined(USE_I2C) && defined(USE_LUXV30B)
+    feature8 |= 0x00010000;
+#endif
 
 //    feature8 |= 0x00010000;
 //    feature8 |= 0x00020000;

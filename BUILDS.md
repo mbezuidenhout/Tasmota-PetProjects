@@ -162,6 +162,7 @@ m = minimal, l = lite, t = tasmota, k = knx, s = sensors, i = ir, d = display
 | USE_AM2320            | - | - | - / - | - | - | - | - |
 | USE_T67XX             | - | - | - / - | - | - | - | - |
 | USE_HM330X            | - | - | - / - | - | - | - | - |
+| USE_LUXV30B           | - | - | - / - | - | - | - | - |
 |                       |   |   |       |   |   |   |   |
 | Feature or Sensor     | m | l | t     | k | s | i | d | Remarks
 | USE_SPI               | - | - | - / - | - | - | - | x |
