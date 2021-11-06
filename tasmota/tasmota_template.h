@@ -2328,7 +2328,7 @@ const mytmplt8266 kModules8266[TMP_MAXMODULE_8285] PROGMEM = {
                         // GPIO10 (SD_DATA3 Flash QIO or ESP8285)
                         // GPIO11 (SD_CMD   Flash)
     GPI8_I2C_SDA,       // GPIO12 I2C SDA - connected to 512KB EEPROM
-    GPI8_LEDLNK_INV,    // GPIO13 Blue Led (0 = On, 1 = Off) - Link status
+    GPI8_LEDLNK,        // GPIO13 Blue Led (0 = On, 1 = Off) - Link status
     GPI8_I2C_SCL,       // GPIO14 I2C SCL - connected to 512KB EEPROM
     0,                  // GPIO15 connected to IO15 pad, also used for logging
     GPI8_KEY1,          // GPIO16 Button
