@@ -148,6 +148,6 @@ for file in files:
   f = open(path_compressed + path.sep + file, "w")
   f.write(comment + lines + definition)
   f.close()
-  print("####### Wrote output to " + path_compressed + path.sep + file)  
+  print("####### Wrote output to " + path_compressed + path.sep + file)
 
 print("If all files are in use, total saving was "+str(totalSaved)+" out of "+str(totalIn))
