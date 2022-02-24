@@ -23,8 +23,8 @@
 
 #ifdef USE_ADS1115
   // Conflicts with ADS1115
-  #warning "LUXV30B conflicts with ADS1115. Consider disabling one of the two."
-#endif
+  #warning "LUXV30B conflicts with ADS1115. Consider disabling ADS1115 to use this device."
+#endif // USE_ADS1115
 
 /**************************************************************************************************
  * Driver for DFRobot V30B Lux sensor
@@ -36,6 +36,7 @@
  * Detection Range: 0-200klx
  * Accuracy: 0.054lx
  * Operating Temperature Range: -40°C~+85°C
+ * I2C Address: 0x4A
  * 
  * Pin assignments:
  * 
@@ -111,7 +112,7 @@
 #define XSNS_94        94
 #define XI2C_64        64  // See I2CDEVICES.md
 
-#define LUXV30B_ADDR      0x47  // Two wire library uses 7-bit addresses throughout
+#define LUXV30B_ADDR      0x4A  // Two wire library uses 7-bit addresses throughout
 #define LUXV30B_DATAREG   0x00   //the address of the data register
 #define LUXV30B_CONFREG   0x04   //the address of the configuration register
 
@@ -122,7 +123,7 @@ class LUXV30B
     void detect();
     bool found();
     void read();
-    uint32_t lux();
+    float lux();
   private:
     bool _found;
     uint32_t _lux;
@@ -134,7 +135,7 @@ LUXV30B::LUXV30B()
   _lux = 0;
 }
 
-uint32_t LUXV30B::lux()
+float LUXV30B::lux()
 {
   return ((float)_lux * 1.4) / 1000;
 }
@@ -146,12 +147,9 @@ bool LUXV30B::found()
 
 void LUXV30B::detect()
 {
-  if (I2cActive(LUXV30B_ADDR))
-  {
-    return;
-  }
+  if (I2cActive(LUXV30B_ADDR)) { return; }
   Wire.beginTransmission(LUXV30B_ADDR);
-  if( Wire.endTransmission() == 0 ) {
+  if (0 == Wire.endTransmission()) {
     _found = true;
     I2cSetActiveFound(LUXV30B_ADDR, "LUXV30B");
   }
@@ -159,21 +157,14 @@ void LUXV30B::detect()
 
 void LUXV30B::read()
 {
-  Wire.requestFrom(LUXV30B_ADDR, 4);
-  AddLog(LOG_LEVEL_INFO, PSTR("LUXV30B Data len: %d"), Wire.available());
-  if (Wire.available() == 4) {
-    AddLog(LOG_LEVEL_INFO, PSTR("LUXV30B reading data"));
-    _lux = Wire.read();
-    _lux <<= 8;
-    _lux |= Wire.read();
-    _lux <<= 8;
-    _lux |= Wire.read();
-    _lux <<= 8;
-    _lux |= Wire.read();
-  }
-  AddLog(LOG_LEVEL_INFO, PSTR("LUXV30B Lux: %d"), _lux);
+  _lux  = I2cRead8(LUXV30B_ADDR, 0);
+  delay(8);
+  _lux |= I2cRead8(LUXV30B_ADDR, 1) << 8;
+  delay(8);
+  _lux |= I2cRead8(LUXV30B_ADDR, 2) << 16;
+  delay(8);
+  _lux |= I2cRead8(LUXV30B_ADDR, 3) << 24;
 }
-
 
 LUXV30B luxv30b;
 
@@ -197,24 +188,25 @@ bool Xsns94(byte function)
 
   else if (luxv30b.found())
   {
+    char lux[FLOATSZ];
+    dtostrfd(luxv30b.lux(), 2, lux);
+
     switch (function)
     {
-    case FUNC_INIT:
-      break;
     case FUNC_EVERY_SECOND:
       luxv30b.read();
       break;
     case FUNC_JSON_APPEND:
       if (0 < luxv30b.lux())
       {
-        ResponseAppend_P(PSTR(",\"LUXV30B\":{\"" D_JSON_ILLUMINANCE "\":%d\"}"), luxv30b.lux());
+        ResponseAppend_P(PSTR(",\"LUXV30B\":{\"" D_JSON_ILLUMINANCE "\":%s\"}"), lux);
       }
       break;
 #ifdef USE_WEBSERVER
     case FUNC_WEB_SENSOR:
       if (0 < luxv30b.lux())
       {
-        WSContentSend_PD(PSTR("{s}LUXV30B " D_ILLUMINANCE "{m}%d " D_UNIT_LUX "{e}"), luxv30b.lux());
+        WSContentSend_PD(PSTR("{s}LUXV30B " D_ILLUMINANCE "{m}%s " D_UNIT_LUX "{e}"), lux);
       }
       break;
 #endif // USE_WEBSERVER
