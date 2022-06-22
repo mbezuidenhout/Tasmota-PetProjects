@@ -126,6 +126,8 @@ String GetDeviceHardware(void) {
     #include "esp32/rom/rtc.h"
   #elif CONFIG_IDF_TARGET_ESP32S2  // ESP32-S2
     #include "esp32s2/rom/rtc.h"
+  #elif CONFIG_IDF_TARGET_ESP32S3  // ESP32-S3
+    #include "esp32s3/rom/rtc.h"
   #elif CONFIG_IDF_TARGET_ESP32C3  // ESP32-C3
     #include "esp32c3/rom/rtc.h"
   #else
@@ -135,36 +137,51 @@ String GetDeviceHardware(void) {
   #include "rom/rtc.h"
 #endif
 
+// Set the Stacksize for Arduino core. Default is 8192, some builds may need a bigger one
+size_t getArduinoLoopTaskStackSize(void) {
+    return SET_ESP32_STACK_SIZE;
+}
+
+
 #include <esp_phy_init.h>
 
-void NvmLoad(const char *sNvsName, const char *sName, void *pSettings, unsigned nSettingsLen) {
-  nvs_handle handle;
-  noInterrupts();
-  nvs_open(sNvsName, NVS_READONLY, &handle);
+bool NvmLoad(const char *sNvsName, const char *sName, void *pSettings, unsigned nSettingsLen) {
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(sNvsName, NVS_READONLY, &handle);
+  if (result != ESP_OK) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NVS: Error %d"), result);
+    return false;
+  }
   size_t size = nSettingsLen;
   nvs_get_blob(handle, sName, pSettings, &size);
   nvs_close(handle);
-  interrupts();
+  return true;
 }
 
 void NvmSave(const char *sNvsName, const char *sName, const void *pSettings, unsigned nSettingsLen) {
-  nvs_handle handle;
-  noInterrupts();
-  nvs_open(sNvsName, NVS_READWRITE, &handle);
-  nvs_set_blob(handle, sName, pSettings, nSettingsLen);
-  nvs_commit(handle);
-  nvs_close(handle);
-  interrupts();
+#ifdef USE_WEBCAM
+  WcInterrupt(0);  // Stop stream if active to fix TG1WDT_SYS_RESET
+#endif
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(sNvsName, NVS_READWRITE, &handle);
+  if (result != ESP_OK) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NVS: Error %d"), result);
+  } else {
+    nvs_set_blob(handle, sName, pSettings, nSettingsLen);
+    nvs_commit(handle);
+    nvs_close(handle);
+  }
+#ifdef USE_WEBCAM
+  WcInterrupt(1);
+#endif
 }
 
 int32_t NvmErase(const char *sNvsName) {
-  nvs_handle handle;
-  noInterrupts();
+  nvs_handle_t handle;
   int32_t result = nvs_open(sNvsName, NVS_READWRITE, &handle);
   if (ESP_OK == result) { result = nvs_erase_all(handle); }
   if (ESP_OK == result) { result = nvs_commit(handle); }
   nvs_close(handle);
-  interrupts();
   return result;
 }
 
@@ -208,16 +225,15 @@ void SettingsErase(uint8_t type) {
 }
 
 uint32_t SettingsRead(void *data, size_t size) {
-  uint32_t source = 1;
 #ifdef USE_UFILESYS
-  if (!TfsLoadFile(TASM_FILE_SETTINGS, (uint8_t*)data, size)) {
-#endif
-    source = 0;
-    NvmLoad("main", "Settings", data, size);
-#ifdef USE_UFILESYS
+  if (TfsLoadFile(TASM_FILE_SETTINGS, (uint8_t*)data, size)) {
+    return 2;
   }
 #endif
-  return source;
+  if (NvmLoad("main", "Settings", data, size)) {
+    return 1;
+  };
+  return 0;
 }
 
 void SettingsWrite(const void *pSettings, unsigned nSettingsLen) {
@@ -263,6 +279,8 @@ extern "C" {
     #include "esp32/rom/spi_flash.h"
   #elif CONFIG_IDF_TARGET_ESP32S2   // ESP32-S2
     #include "esp32s2/rom/spi_flash.h"
+  #elif CONFIG_IDF_TARGET_ESP32S3   // ESP32-S3
+    #include "esp32s3/rom/spi_flash.h"
   #elif CONFIG_IDF_TARGET_ESP32C3   // ESP32-C3
     #include "esp32c3/rom/spi_flash.h"
   #else
@@ -364,6 +382,10 @@ String ESP32GetResetReason(uint32_t cpu_no) {
     case 17 : return F("Time Group1 reset CPU");                            // 17  -                 TG1WDT_CPU_RESET
     case 18 : return F("Super watchdog reset digital core and rtc module"); // 18  -                 SUPER_WDT_RESET
     case 19 : return F("Glitch reset digital core and rtc module");         // 19  -                 GLITCH_RTC_RESET
+    case 20 : return F("Efuse reset digital core");                         // 20                    EFUSE_RESET
+    case 21 : return F("Usb uart reset digital core");                      // 21                    USB_UART_CHIP_RESET
+    case 22 : return F("Usb jtag reset digital core");                      // 22                    USB_JTAG_CHIP_RESET
+    case 23 : return F("Power glitch reset digital core and rtc module");   // 23                    POWER_GLITCH_RESET
   }
 
   return F("No meaning");                                                   // 0 and undefined
@@ -489,6 +511,11 @@ void *special_calloc(size_t num, size_t size) {
   }
 }
 
+// Variants for IRAM heap, which need all accesses to be 32 bits aligned
+void *special_malloc32(uint32_t size) {
+  return heap_caps_malloc(size, MALLOC_CAP_32BIT);
+}
+
 float CpuTemperature(void) {
 #ifdef CONFIG_IDF_TARGET_ESP32
   return (float)temperatureRead();  // In Celsius
@@ -499,12 +526,16 @@ float CpuTemperature(void) {
   return t;
 */
 #else
-  // Currently (20210801) repeated calls to temperatureRead() on ESP32C3 and ESP32S2 result in IDF error messages
-  static float t = NAN;
-  if (isnan(t)) {
-    t = (float)temperatureRead();  // In Celsius
-  }
-  return t;
+  #ifndef CONFIG_IDF_TARGET_ESP32S3
+    // Currently (20210801) repeated calls to temperatureRead() on ESP32C3 and ESP32S2 result in IDF error messages
+    static float t = NAN;
+    if (isnan(t)) {
+      t = (float)temperatureRead();  // In Celsius
+    }
+    return t;
+  #else
+    return NAN;
+  #endif
 #endif
 }
 
@@ -551,6 +582,8 @@ float CpuTemperature(void) {
 #endif
 */
 
+// #include "esp_chip_info.h"
+
 String GetDeviceHardware(void) {
   // https://www.espressif.com/en/products/socs
 
@@ -558,10 +591,12 @@ String GetDeviceHardware(void) {
 Source: esp-idf esp_system.h and esptool
 
 typedef enum {
-    CHIP_ESP32   = 1,  //!< ESP32
-    CHIP_ESP32S2 = 2,  //!< ESP32-S2
-    CHIP_ESP32S3 = 4,  //!< ESP32-S3
-    CHIP_ESP32C3 = 5,  //!< ESP32-C3
+    CHIP_ESP32  = 1, //!< ESP32
+    CHIP_ESP32S2 = 2, //!< ESP32-S2
+    CHIP_ESP32S3 = 9, //!< ESP32-S3
+    CHIP_ESP32C3 = 5, //!< ESP32-C3
+    CHIP_ESP32H2 = 6, //!< ESP32-H2
+    CHIP_ESP32C2 = 12, //!< ESP32-C2
 } esp_chip_model_t;
 
 // Chip feature flags, used in esp_chip_info_t
@@ -569,6 +604,9 @@ typedef enum {
 #define CHIP_FEATURE_WIFI_BGN       BIT(1)      //!< Chip has 2.4GHz WiFi
 #define CHIP_FEATURE_BLE            BIT(4)      //!< Chip has Bluetooth LE
 #define CHIP_FEATURE_BT             BIT(5)      //!< Chip has Bluetooth Classic
+#define CHIP_FEATURE_IEEE802154     BIT(6)      //!< Chip has IEEE 802.15.4
+#define CHIP_FEATURE_EMB_PSRAM      BIT(7)      //!< Chip has embedded psram
+
 
 // The structure represents information about the chip
 typedef struct {
@@ -650,7 +688,10 @@ typedef struct {
 #endif  // CONFIG_IDF_TARGET_ESP32S2
     return F("ESP32-S2");
   }
-  else if (4 == chip_model) {  // ESP32-S3
+  else if (9 == chip_model) {  // ESP32-S3
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+    // no variants for now
+#endif  // CONFIG_IDF_TARGET_ESP32S3
     return F("ESP32-S3");                                  // Max 240MHz, Dual core, QFN 7*7, ESP32-S3-WROOM-1, ESP32-S3-DevKitC-1
   }
   else if (5 == chip_model) {  // ESP32-C3

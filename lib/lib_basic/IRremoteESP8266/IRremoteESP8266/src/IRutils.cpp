@@ -190,8 +190,11 @@ bool hasACState(const decode_type_t protocol) {
     case HITACHI_AC1:
     case HITACHI_AC2:
     case HITACHI_AC3:
+    case HITACHI_AC264:
+    case HITACHI_AC296:
     case HITACHI_AC344:
     case HITACHI_AC424:
+    case KELON168:
     case KELVINATOR:
     case MIRAGE:
     case MITSUBISHI136:
@@ -634,6 +637,7 @@ namespace irutils {
           case lg_ac_remote_model_t::AKB75215403:   return kAkb75215403Str;
           case lg_ac_remote_model_t::AKB74955603:   return kAkb74955603Str;
           case lg_ac_remote_model_t::AKB73757604:   return kAkb73757604Str;
+          case lg_ac_remote_model_t::LG6711A20083V: return kLg6711a20083vStr;
           default:                                  return kUnknownStr;
         }
         break;
@@ -1047,6 +1051,21 @@ namespace irutils {
     const uint8_t nrofnibbles = (count < 16) ? count : (64 / 4);
     for (uint8_t i = 0; i < nrofnibbles; i++, copy >>= 4) sum += copy & 0xF;
     return nibbleonly ? sum & 0xF : sum;
+  }
+
+  /// Sum all the bytes together in an integer.
+  /// @param[in] data The integer to be summed.
+  /// @param[in] count The number of bytes to sum. Starts from LSB. Max of 8.
+  /// @param[in] init Starting value of the calculation to use. (Default is 0)
+  /// @param[in] byteonly true, the result is 8 bits. false, it's 16 bits.
+  /// @return The 8/16-bit calculated result of all the bytes and init value.
+  uint16_t sumBytes(const uint64_t data, const uint8_t count,
+                    const uint8_t init, const bool byteonly) {
+    uint16_t sum = init;
+    uint64_t copy = data;
+    const uint8_t nrofbytes = (count < 8) ? count : (64 / 8);
+    for (uint8_t i = 0; i < nrofbytes; i++, copy >>= 8) sum += (copy & 0xFF);
+    return byteonly ? sum & 0xFF : sum;
   }
 
   /// Convert a byte of Binary Coded Decimal(BCD) into an Integer.

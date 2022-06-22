@@ -184,9 +184,10 @@ bool RtcRebootValid(void) {
 extern "C" {
 #include "spi_flash.h"
 }
-#include "eboot_command.h"
 
 #ifdef ESP8266
+
+#include "eboot_command.h"
 
 extern "C" uint32_t _FS_start;      // 1M = 0x402fb000, 2M = 0x40300000, 4M = 0x40300000
 const uint32_t FLASH_FS_START = (((uint32_t)&_FS_start - 0x40200000) / SPI_FLASH_SEC_SIZE);
@@ -229,7 +230,9 @@ void UpdateQuickPowerCycle(bool update) {
 
   const uint32_t QPC_COUNT = 7;  // Number of Power Cycles before Settings erase
   const uint32_t QPC_SIGNATURE = 0xFFA55AFF;
-
+#ifdef USE_COUNTER
+  CounterInterruptDisable(true);
+#endif
 #ifdef ESP8266
   const uint32_t qpc_sector = SETTINGS_LOCATION - CFG_ROTATES;
   const uint32_t qpc_location = qpc_sector * SPI_FLASH_SEC_SIZE;
@@ -279,10 +282,11 @@ void UpdateQuickPowerCycle(bool update) {
     AddLog(LOG_LEVEL_INFO, PSTR("QPC: Reset"));
   }
 #endif  // ESP32
-
+#ifdef USE_COUNTER
+  CounterInterruptDisable(false);
+#endif
 #endif  // FIRMWARE_MINIMAL
 }
-
 #ifdef USE_EMERGENCY_RESET
 /*********************************************************************************************\
  * Emergency reset if Rx and Tx are tied together
@@ -438,13 +442,21 @@ bool SettingsConfigRestore(void) {
   }
 
   if (valid_settings) {
-#ifdef ESP8266
     // uint8_t       config_version;            // F36
+#ifdef ESP8266
     valid_settings = (0 == settings_buffer[0xF36]);  // Settings->config_version
 #endif  // ESP8266
 #ifdef ESP32
-    // uint8_t       config_version;            // F36
-    valid_settings = (1 == settings_buffer[0xF36]);  // Settings->config_version
+
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+    valid_settings = (2 == settings_buffer[0xF36]);  // Settings->config_version ESP32S3
+#elif CONFIG_IDF_TARGET_ESP32S2
+    valid_settings = (3 == settings_buffer[0xF36]);  // Settings->config_version ESP32S2
+#elif CONFIG_IDF_TARGET_ESP32C3
+    valid_settings = (4 == settings_buffer[0xF36]);  // Settings->config_version ESP32C3
+#else
+    valid_settings = (1 == settings_buffer[0xF36]);  // Settings->config_version ESP32 all other
+#endif  // CONFIG_IDF_TARGET_ESP32S3
 #endif  // ESP32
   }
 
@@ -615,7 +627,9 @@ void SettingsSave(uint8_t rotate) {
     Settings->cfg_size = sizeof(TSettings);
     Settings->cfg_crc = GetSettingsCrc();               // Keep for backward compatibility in case of fall-back just after upgrade
     Settings->cfg_crc32 = GetSettingsCrc32();
-
+#ifdef USE_COUNTER
+    CounterInterruptDisable(true);
+#endif
 #ifdef ESP8266
 #ifdef USE_UFILESYS
     TfsSaveFile(TASM_FILE_SETTINGS, (const uint8_t*)Settings, sizeof(TSettings));
@@ -641,8 +655,10 @@ void SettingsSave(uint8_t rotate) {
   }
 #endif  // FIRMWARE_MINIMAL
   RtcSettingsSave();
+#ifdef USE_COUNTER
+  CounterInterruptDisable(false);
+#endif
 }
-
 void SettingsLoad(void) {
 #ifdef ESP8266
   // Load configuration from optional file and flash (eeprom and 7 additonal slots) if first valid load does not stop_flash_rotate
@@ -694,7 +710,7 @@ void SettingsLoad(void) {
   if (source) {
     settings_location = 1;
     if (Settings->cfg_holder == (uint16_t)CFG_HOLDER) {
-      AddLog(LOG_LEVEL_NONE, PSTR(D_LOG_CONFIG "Loaded from %s, " D_COUNT " %lu"), (source)?"File":"Nvm", Settings->save_flag);
+      AddLog(LOG_LEVEL_NONE, PSTR(D_LOG_CONFIG "Loaded from %s, " D_COUNT " %lu"), (2 == source)?"File":"NVS", Settings->save_flag);
     }
   }
 #endif  // ESP32
@@ -824,7 +840,15 @@ void SettingsDefaultSet2(void) {
 //  Settings->config_version = 0;  // ESP8266 (Has been 0 for long time)
 #endif  // ESP8266
 #ifdef ESP32
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  Settings->config_version = 2;  // ESP32S3
+#elif CONFIG_IDF_TARGET_ESP32S2
+  Settings->config_version = 3;  // ESP32S2
+#elif CONFIG_IDF_TARGET_ESP32C3
+  Settings->config_version = 4;  // ESP32C3
+#else
   Settings->config_version = 1;  // ESP32
+#endif  // CONFIG_IDF_TARGET_ESP32S3
 #endif  // ESP32
 
   flag.stop_flash_rotate |= APP_FLASH_CYCLE;
@@ -1032,6 +1056,7 @@ void SettingsDefaultSet2(void) {
   flag.ir_receive_decimal |= IR_DATA_RADIX;
   flag3.receive_raw |= IR_ADD_RAW_DATA;
   Settings->param[P_IR_UNKNOW_THRESHOLD] = IR_RCV_MIN_UNKNOWN_SIZE;
+  Settings->param[P_IR_TOLERANCE] = IR_RCV_TOLERANCE;
 
   // RF Bridge
   flag.rf_receive_decimal |= RF_DATA_RADIX;
@@ -1093,7 +1118,7 @@ void SettingsDefaultSet2(void) {
 
   Settings->pwm_frequency = PWM_FREQ;
   Settings->pwm_range = PWM_RANGE;
-  for (uint32_t i = 0; i < MAX_PWMS; i++) {
+  for (uint32_t i = 0; i < LST_MAX; i++) {
     Settings->light_color[i] = DEFAULT_LIGHT_COMPONENT;
 //    Settings->pwm_value[i] = 0;
   }
@@ -1183,6 +1208,7 @@ void SettingsDefaultSet2(void) {
   // Tuya
   flag3.tuya_apply_o20 |= TUYA_SETOPTION_20;
   flag5.tuya_allow_dimmer_0 |= TUYA_ALLOW_DIMMER_0;
+  flag5.tuya_exclude_from_mqtt |= TUYA_SETOPTION_137;
   flag3.tuya_serial_mqtt_publish |= MQTT_TUYA_RECEIVED;
   mbflag2.temperature_set_res |= TUYA_TEMP_SET_RES;
 
@@ -1197,7 +1223,8 @@ void SettingsDefaultSet2(void) {
   flag4.mqtt_no_retain |= MQTT_NO_RETAIN;
 
   flag5.shift595_invert_outputs |= SHIFT595_INVERT_OUTPUTS;
-  Settings->shift595_device_count = SHIFT595_DEVICE_COUNT; 
+  Settings->shift595_device_count = SHIFT595_DEVICE_COUNT;
+  flag5.tls_use_fingerprint |= MQTT_TLS_FINGERPRINT;
 
   Settings->flag = flag;
   Settings->flag2 = flag2;
@@ -1344,7 +1371,15 @@ void SettingsDelta(void) {
       Settings->config_version = 0;  // ESP8266 (Has been 0 for long time)
 #endif  // ESP8266
 #ifdef ESP32
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+      Settings->config_version = 2;  // ESP32S3
+#elif CONFIG_IDF_TARGET_ESP32S2
+      Settings->config_version = 3;  // ESP32S2
+#elif CONFIG_IDF_TARGET_ESP32C3
+      Settings->config_version = 4;  // ESP32C3
+#else
       Settings->config_version = 1;  // ESP32
+#endif  // CONFIG_IDF_TARGET_ESP32S3
 #endif  // ESP32
     }
     if (Settings->version < 0x08020006) {
@@ -1401,7 +1436,7 @@ void SettingsDelta(void) {
         Settings->switchmode[i] = (i < 8) ? Settings->ex_switchmode[i] : SWITCH_MODE;
       }
       for (uint32_t i = 0; i < MAX_INTERLOCKS_SET; i++) {
-        Settings->interlock[i] = (i < 4) ? Settings->ex_interlock[i] : 0;
+        Settings->interlock[i] = (i < 4) ? Settings->ds3502_state[i] : 0;
       }
     }
     if (Settings->version < 0x09020007) {
@@ -1454,11 +1489,11 @@ void SettingsDelta(void) {
       Settings->flag5.disable_referer_chk |= true;
 #endif
     }
-    if (Settings->version < 0x09050009) {
+    if (Settings->version < 0x09050009) {  // 9.5.0.9
       memset(&Settings->energy_kWhtoday_ph, 0, 36);
       memset(&RtcSettings.energy_kWhtoday_ph, 0, 24);
     }
-    if (Settings->version < 0x0A000003) {
+    if (Settings->version < 0x0A000003) {  // 10.0.0.3
       if (0 == Settings->param[P_ARP_GRATUITOUS]) {
         Settings->param[P_ARP_GRATUITOUS] = WIFI_ARP_INTERVAL;
 #ifdef USE_TLS
@@ -1470,6 +1505,27 @@ void SettingsDelta(void) {
         }
 #endif
       }
+    }
+    if (Settings->version < 0x0A010003) {  // 10.1.0.3
+      Settings->sserial_config = Settings->serial_config;
+    }
+    if (Settings->version < 0x0A010006) {  // 10.1.0.6
+      Settings->web_time_start = 0;
+      Settings->web_time_end = 0;
+    }
+    if (Settings->version < 0x0B000003) {  // 11.0.0.3
+       memcpy(Settings->pulse_timer, Settings->ex_pulse_timer, 16);
+    }
+    if (Settings->version < 0x0B000006) {  // 11.0.0.6
+        Settings->weight_absconv_a = 0;
+        Settings->weight_absconv_b = 0;
+    }
+    if (Settings->version < 0x0B000007) {  // 11.0.0.7
+        Settings->weight_user_tare = 0;
+        Settings->weight_offset = 0;
+#ifdef USE_HX711
+        Settings->weight_offset = Settings->energy_frequency_calibration * Settings->weight_calibration;
+#endif
     }
 
     Settings->version = VERSION;

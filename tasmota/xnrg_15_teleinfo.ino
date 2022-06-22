@@ -333,56 +333,55 @@ void DataCallback(struct _ValueList * me, uint8_t  flags)
 
                 // Base, un seul index
                 if (ilabel == LABEL_BASE) {
-                    total = atoi(me->value);
-                    AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: Base:%u"), total);
+                    total = atol(me->value);
+                    AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: Base:%ld"), total);
                 // Heures creuses/pleines calculer total
                 } else {
                     // Heures creuses get heures pleines
                     if (ilabel == LABEL_HCHC) {
-                        hc = atoi(me->value);
+                        hc = atol(me->value);
                         if ( getValueFromLabelIndex(LABEL_HCHP, value) ) {
-                            hp = atoi(value);
+                            hp = atol(value) ;
                         }
 
                     // Heures pleines, get heures creuses
                     } else if (ilabel == LABEL_HCHP) {
-                        hp = atoi(me->value);
+                        hp = atol(me->value);
                         if ( getValueFromLabelIndex(LABEL_HCHC, value) ) {
-                            hc = atoi(value);
+                            hc = atol(value) ;
                         }
                     }
-                    total = hc + hp;
-                    AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HC:%u  HP:%u  Total:%u"), hc, hp, total);
+                    if (hc>0 && hp>0) {
+                        total = hc + hp;
+                    }
+                    AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HC:%ld  HP:%ld  Total:%ld"), hc, hp, total);
                 }
 
-                Energy.import_active[0] = total/1000.0f;
-                EnergyUpdateTotal();
-                AddLog (LOG_LEVEL_INFO, PSTR ("TIC: Total counter updated to %u Wh"), total);
+                AddLog (LOG_LEVEL_INFO, PSTR ("TIC: Total counter updated to %ld Wh"), total);
+                if (total>0) {
+                    Energy.import_active[0] = (float)total/1000.0f;
+                    EnergyUpdateTotal();
+                    AddLog (LOG_LEVEL_DEBUG_MORE, PSTR ("TIC: import_active[0]=%.3fKWh"), Energy.import_active[0] );
+                }
             }
 
-            // Wh total index (standard)
+            // Wh total index (all contract)
             else if ( ilabel == LABEL_EAST)
             {
-                uint32_t total = atoi(me->value);
-                if (contrat != CONTRAT_BAS) {
-                    Energy.import_active[0] = total/1000.0f;
-                    EnergyUpdateTotal();
-                    AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: Total:%uWh"), total);
-                }
+                uint32_t total = atol(me->value);
+                Energy.import_active[0] = (float)total/1000.0f;
+                EnergyUpdateTotal();
+                AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: Total:%ldWh"), total);
             }
 
             // Wh indexes (standard)
             else if ( ilabel == LABEL_EASF01)
             {
-                if (contrat == CONTRAT_BAS) {
-                    Energy.import_active[0] = atoi(me->value)/1000.0f;
-                    EnergyUpdateTotal();
-                }
-                AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HC:%u"),  atoi(me->value));
+                AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HC:%ld"), atol(me->value));
             }
             else if ( ilabel == LABEL_EASF02)
             {
-                AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HP:%u"),  atoi(me->value));
+                AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: HP:%ld"), atol(me->value));
             }
 
             // Contract subscribed (legacy)
@@ -504,7 +503,7 @@ bool ResponseAppendTInfo(char sep, bool all)
                     if (!isNumber) {
                         ResponseAppend_P( PSTR("\"%s\""), me->value );
                     } else {
-                        ResponseAppend_P( PSTR("%d"), atoi(me->value));
+                        ResponseAppend_P( PSTR("%ld"), atol(me->value));
                     }
 
                     // Now JSON separator is needed
@@ -612,15 +611,21 @@ void TInfoInit(void)
 #ifdef ESP8266
     // Allow GPIO3 AND GPIO13 with hardware fallback to 2
     // Set buffer to nnn char to support 250ms loop at 9600 baud
-    TInfoSerial = new TasmotaSerial(tic_rx_pin, -1, 2, 0, serial_buffer_size);
+    // In case of "on-the-fly" re-init, serial is already there, don't re-allocate
+    if (!TInfoSerial) {
+        TInfoSerial = new TasmotaSerial(tic_rx_pin, -1, 2, 0, serial_buffer_size);
+    }
     //pinMode(rx_pin, INPUT_PULLUP);
 #endif  // ESP8266
 #ifdef ESP32
     // Set buffer to nnn char to support 250ms loop at 9600 baud
-    TInfoSerial = new TasmotaSerial(tic_rx_pin, -1, 1, 0, serial_buffer_size);
+    // In case of "on-the-fly" re-init, serial is already there, don't re-allocate
+    if (!TInfoSerial) {
+        TInfoSerial = new TasmotaSerial(tic_rx_pin, -1, 1, 0, serial_buffer_size);
+    }
 #endif  // ESP32
 
-    if (TInfoSerial->begin(baudrate, SERIAL_7E1)) {
+    if (TInfoSerial && TInfoSerial->begin(baudrate, SERIAL_7E1)) {
 #ifdef ESP8266
         if (TInfoSerial->hardwareSerial() ) {
             ClaimSerial();
@@ -637,6 +642,9 @@ void TInfoInit(void)
             AddLog(LOG_LEVEL_INFO, PSTR("TIC: using software serial"));
         }
 #endif  // ESP8266
+#ifdef ESP32
+        AddLog(LOG_LEVEL_DEBUG, PSTR("TIC: using hardserial %d"), TInfoSerial->getUart());
+#endif
         // Init teleinfo
         tinfo.init(tinfo_mode);
         // Attach needed callbacks
@@ -652,6 +660,8 @@ void TInfoInit(void)
                 AddLog(LOG_LEVEL_INFO, PSTR("TIC: Sending only one frame over %d "), raw_skip+1);
             }
         }
+    } else {
+        AddLog(LOG_LEVEL_INFO, PSTR("TIC: failed init serial"));
     }
 }
 
@@ -736,25 +746,13 @@ bool TInfoCmd(void) {
                     // Only if current settings is different than previous
                     if ( (tinfo_mode==TINFO_MODE_STANDARD && command_code==CMND_TELEINFO_HISTORIQUE) ||
                          (tinfo_mode==TINFO_MODE_HISTORIQUE && command_code==CMND_TELEINFO_STANDARD) ) {
-
-                        // Cleanup Serial not sure it will works since
-                        // there is no end() or close() on tasmotaserial class
-                        if (TInfoSerial) {
-                            TInfoSerial->flush();
-                            //TInfoSerial->end();
-                            free(TInfoSerial);
-                        }
-
                         // Change mode
                         Settings->teleinfo.mode_standard = command_code == CMND_TELEINFO_STANDARD ? 1 : 0;
-
                         AddLog(LOG_LEVEL_INFO, PSTR("TIC: '%s' mode"), mode_name);
-
                         // Re init teleinfo (LibTeleinfo always free linked list on init)
                         TInfoInit();
 
                         serviced = true;
-
                     } else {
                         AddLog(LOG_LEVEL_INFO, PSTR("TIC: No change to '%s' mode"), mode_name);
                     }

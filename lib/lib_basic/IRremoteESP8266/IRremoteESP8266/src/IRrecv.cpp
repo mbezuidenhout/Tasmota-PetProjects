@@ -13,7 +13,7 @@ extern "C" {
 }
 #endif  // ESP8266
 #include <Arduino.h>
-#endif
+#endif  // UNIT_TEST
 #include <algorithm>
 #ifdef UNIT_TEST
 #include <cassert>
@@ -56,6 +56,20 @@ static ETSTimer timer;
 }  // namespace _IRrecv
 #endif  // ESP8266
 #if defined(ESP32)
+// We need a horrible timer hack for ESP32 Arduino framework < v2.0.0
+#if !defined(_ESP32_IRRECV_TIMER_HACK)
+// Version check
+#if ( defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 2) )
+// No need for the hack if we are running version >= 2.0.0
+#define _ESP32_IRRECV_TIMER_HACK false
+#else  // Version check
+// If no ESP_ARDUINO_VERSION_MAJOR is defined, or less than 2, then we are
+// using an old ESP32 core, so we need the hack.
+#define _ESP32_IRRECV_TIMER_HACK true
+#endif  // Version check
+#endif  // !defined(_ESP32_IRRECV_TIMER_HACK)
+
+#if _ESP32_IRRECV_TIMER_HACK
 // Required structs/types from:
 // https://github.com/espressif/arduino-esp32/blob/6b0114366baf986c155e8173ab7c22bc0c5fcedc/cores/esp32/esp32-hal-timer.c#L28-L58
 // These are needed to be able to directly manipulate the timer registers from
@@ -117,7 +131,7 @@ typedef struct hw_timer_s {
         uint8_t timer;
         portMUX_TYPE lock;
 } hw_timer_t;
-// End of Horrible Hack.
+#endif  // _ESP32_IRRECV_TIMER_HACK / End of Horrible Hack.
 
 namespace _IRrecv {
 static hw_timer_t * timer = NULL;
@@ -211,6 +225,7 @@ static void USE_IRAM_ATTR gpio_intr() {
 #if defined(ESP32)
   // Reset the timeout.
   //
+#if _ESP32_IRRECV_TIMER_HACK
   // The following three lines of code are the equiv of:
   //   `timerWrite(timer, 0);`
   // We can't call that routine safely from inside an ISR as that procedure
@@ -226,6 +241,10 @@ static void USE_IRAM_ATTR gpio_intr() {
   // @see https://github.com/crankyoldgit/IRremoteESP8266/issues/1350
   // @see https://github.com/espressif/arduino-esp32/blob/6b0114366baf986c155e8173ab7c22bc0c5fcedc/cores/esp32/esp32-hal-timer.c#L176-L178
   timer->dev->config.alarm_en = 1;
+#else  // _ESP32_IRRECV_TIMER_HACK
+  timerWrite(timer, 0);
+  timerAlarmEnable(timer);
+#endif  // _ESP32_IRRECV_TIMER_HACK
 #endif  // ESP32
 }
 #endif  // UNIT_TEST
@@ -242,13 +261,20 @@ static void USE_IRAM_ATTR gpio_intr() {
 ///   capturing data. (Default: kTimeoutMs)
 /// @param[in] save_buffer Use a second (save) buffer to decode from.
 ///   (Default: false)
-/// @param[in] timer_num Nr. of the ESP32 timer to use (0 to 3) (ESP32 Only)
+/// @param[in] timer_num Nr. of the ESP32 timer to use. (0 to 3) (ESP32 Only)
+///   or (0 to 1) (ESP32-C3)
 #if defined(ESP32)
 IRrecv::IRrecv(const uint16_t recvpin, const uint16_t bufsize,
                const uint8_t timeout, const bool save_buffer,
                const uint8_t timer_num) {
-  // There are only 4 timers. 0 to 3.
-  _timer_num = std::min(timer_num, (uint8_t)3);
+  // Ensure we use a valid timer number.
+  _timer_num = std::min(timer_num,
+                        (uint8_t)(
+#ifdef SOC_TIMER_GROUP_TOTAL_TIMERS
+                                  SOC_TIMER_GROUP_TOTAL_TIMERS - 1));
+#else  // SOC_TIMER_GROUP_TOTAL_TIMERS
+                                  3));
+#endif  // SOC_TIMER_GROUP_TOTAL_TIMERS
 #else  // ESP32
 /// @cond IGNORE
 /// Class constructor
@@ -334,10 +360,19 @@ void IRrecv::enableIRIn(const bool pullup) {
   // Initialise the ESP32 timer.
   // 80MHz / 80 = 1 uSec granularity.
   timer = timerBegin(_timer_num, 80, true);
+#ifdef DEBUG
+  if (timer == NULL) {
+    DPRINT("FATAL: Unable enable system timer: ");
+    DPRINTLN((uint16_t)_timer_num);
+  }
+#endif  // DEBUG
+  assert(timer != NULL);  // Check we actually got the timer.
   // Set the timer so it only fires once, and set it's trigger in uSeconds.
   timerAlarmWrite(timer, MS_TO_USEC(params.timeout), ONCE);
   // Note: Interrupt needs to be attached before it can be enabled or disabled.
-  timerAttachInterrupt(timer, &read_timeout, true);
+  // Note: EDGE (true) is not supported, use LEVEL (false). Ref: #1713
+  // See: https://github.com/espressif/arduino-esp32/blob/caef4006af491130136b219c1205bdcf8f08bf2b/cores/esp32/esp32-hal-timer.c#L224-L227
+  timerAttachInterrupt(timer, &read_timeout, false);
 #endif  // ESP32
 
   // Initialise state machine variables
@@ -695,9 +730,9 @@ bool IRrecv::decode(decode_results *results, irparams_t *save,
     if (decodeSharp(results, offset)) return true;
 #endif
 #if DECODE_COOLIX
-    DPRINTLN("Attempting Coolix decode");
+    DPRINTLN("Attempting Coolix 24-bit decode");
     if (decodeCOOLIX(results, offset)) return true;
-#endif
+#endif  // DECODE_COOLIX
 #if DECODE_NIKAI
     DPRINTLN("Attempting Nikai decode");
     if (decodeNikai(results, offset)) return true;
@@ -809,6 +844,18 @@ bool IRrecv::decode(decode_results *results, irparams_t *save,
     if (decodeHitachiAC(results, offset, kHitachiAc344Bits, true, false))
       return true;
 #endif  // DECODE_HITACHI_AC344
+#if DECODE_HITACHI_AC264
+    // HitachiAC264 should be checked before HitachiAC
+    DPRINTLN("Attempting Hitachi AC264 decode");
+    if (decodeHitachiAC(results, offset, kHitachiAc264Bits, true, false))
+      return true;
+#endif  // DECODE_HITACHI_AC264
+#if DECODE_HITACHI_AC296
+    // HitachiAC296 should be checked before HitachiAC
+    DPRINTLN("Attempting Hitachi AC296 decode");
+    if (decodeHitachiAc296(results, offset, kHitachiAc296Bits, true))
+      return true;
+#endif  // DECODE_HITACHI_AC296
 #if DECODE_HITACHI_AC2
     // HitachiAC2 should be checked before HitachiAC
     DPRINTLN("Attempting Hitachi AC2 decode");
@@ -1023,8 +1070,12 @@ bool IRrecv::decode(decode_results *results, irparams_t *save,
     DPRINTLN("Attempting Teknopoint decode");
     if (decodeTeknopoint(results, offset)) return true;
 #endif  // DECODE_TEKNOPOINT
+#if DECODE_KELON168
+    DPRINTLN("Attempting Kelon 168-bit decode");
+    if (decodeKelon168(results, offset)) return true;
+#endif  // DECODE_KELON168
 #if DECODE_KELON
-    DPRINTLN("Attempting Kelon decode");
+    DPRINTLN("Attempting Kelon 48-bit decode");
     if (decodeKelon(results, offset)) return true;
 #endif  // DECODE_KELON
 #if DECODE_SANYO_AC88
@@ -1047,6 +1098,10 @@ bool IRrecv::decode(decode_results *results, irparams_t *save,
     DPRINTLN("Attempting Airton decode");
     if (decodeAirton(results, offset)) return true;
 #endif  // DECODE_AIRTON
+#if DECODE_COOLIX48
+    DPRINTLN("Attempting Coolix 48-bit decode");
+    if (decodeCoolix48(results, offset)) return true;
+#endif  // DECODE_COOLIX48
   // Typically new protocols are added above this line.
   }
 #if DECODE_HASH
@@ -1079,7 +1134,7 @@ uint32_t IRrecv::ticksLow(const uint32_t usecs, const uint8_t tolerance,
   // max() used to ensure the result can't drop below 0 before the cast.
   return ((uint32_t)std::max(
       (int32_t)(usecs * (1.0 - _validTolerance(tolerance) / 100.0) - delta),
-      0));
+      (int32_t)0));
 }
 
 /// Calculate the upper bound of the nr. of ticks.
@@ -1141,8 +1196,8 @@ bool IRrecv::matchAtLeast(uint32_t measured, uint32_t desired,
   DPRINT(". Matching: ");
   DPRINT(measured);
   DPRINT(" >= ");
-  DPRINT(ticksLow(std::min(desired, MS_TO_USEC(params.timeout)), tolerance,
-                  delta));
+  DPRINT(ticksLow(std::min(desired, (uint32_t)MS_TO_USEC(params.timeout)),
+                  tolerance, delta));
   DPRINT(" [min(");
   DPRINT(ticksLow(desired, tolerance, delta));
   DPRINT(", ");
@@ -1162,7 +1217,8 @@ bool IRrecv::matchAtLeast(uint32_t measured, uint32_t desired,
   // We really should never get a value of 0, except as the last value
   // in the buffer. If that is the case, then assume infinity and return true.
   if (measured == 0) return true;
-  return measured >= ticksLow(std::min(desired, MS_TO_USEC(params.timeout)),
+  return measured >= ticksLow(std::min(desired,
+                                       (uint32_t)MS_TO_USEC(params.timeout)),
                               tolerance, delta);
 }
 

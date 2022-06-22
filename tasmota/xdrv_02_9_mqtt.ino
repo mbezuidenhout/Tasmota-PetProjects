@@ -45,6 +45,7 @@ WiFiClient EspClient;                     // Wifi Client - non-TLS
 #endif  // USE_MQTT_AZURE_IOT
 
 const char kMqttCommands[] PROGMEM = "|"  // No prefix
+#ifndef FIRMWARE_MINIMAL
   // SetOption synonyms
   D_SO_MQTTJSONONLY "|"
 #ifdef USE_MQTT_TLS
@@ -65,7 +66,9 @@ const char kMqttCommands[] PROGMEM = "|"  // No prefix
   D_CMND_MQTTHOST "|" D_CMND_MQTTPORT "|" D_CMND_MQTTRETRY "|" D_CMND_STATETEXT "|" D_CMND_MQTTCLIENT "|"
   D_CMND_FULLTOPIC "|" D_CMND_PREFIX "|" D_CMND_GROUPTOPIC "|" D_CMND_TOPIC "|" D_CMND_PUBLISH "|" D_CMND_MQTTLOG "|"
   D_CMND_BUTTONTOPIC "|" D_CMND_SWITCHTOPIC "|" D_CMND_BUTTONRETAIN "|" D_CMND_SWITCHRETAIN "|" D_CMND_POWERRETAIN "|"
-  D_CMND_SENSORRETAIN "|" D_CMND_INFORETAIN "|" D_CMND_STATERETAIN ;
+  D_CMND_SENSORRETAIN "|" D_CMND_INFORETAIN "|" D_CMND_STATERETAIN
+#endif  // FIRMWARE_MINIMAL
+  ;
 
 SO_SYNONYMS(kMqttSynonyms,
   90,
@@ -76,6 +79,7 @@ SO_SYNONYMS(kMqttSynonyms,
 );
 
 void (* const MqttCommand[])(void) PROGMEM = {
+#ifndef FIRMWARE_MINIMAL
 #if defined(USE_MQTT_TLS)
   &CmndMqttFingerprint,
 #endif
@@ -89,7 +93,9 @@ void (* const MqttCommand[])(void) PROGMEM = {
   &CmndMqttHost, &CmndMqttPort, &CmndMqttRetry, &CmndStateText, &CmndMqttClient,
   &CmndFullTopic, &CmndPrefix, &CmndGroupTopic, &CmndTopic, &CmndPublish, &CmndMqttlog,
   &CmndButtonTopic, &CmndSwitchTopic, &CmndButtonRetain, &CmndSwitchRetain, &CmndPowerRetain, &CmndSensorRetain,
-  &CmndInfoRetain, &CmndStateRetain };
+  &CmndInfoRetain, &CmndStateRetain
+#endif  // FIRMWARE_MINIMAL
+  };
 
 struct MQTT {
   uint16_t connect_count = 0;            // MQTT re-connect count
@@ -188,6 +194,9 @@ void MqttDisableLogging(bool state) {
 PubSubClient MqttClient;
 
 void MqttInit(void) {
+  // Force buffer size since the #define may not be visible from Arduino lib
+  MqttClient.setBufferSize(MQTT_MAX_PACKET_SIZE);
+
 #ifdef USE_MQTT_AZURE_IOT
   Settings->mqtt_port = 8883;
 #endif //USE_MQTT_AZURE_IOT
@@ -208,7 +217,11 @@ void MqttInit(void) {
 
   if (Mqtt.mqtt_tls) {
 #ifdef ESP32
+  #if MQTT_MAX_PACKET_SIZE > 2000
+    tlsClient = new BearSSL::WiFiClientSecure_light(4096,4096);
+  #else
     tlsClient = new BearSSL::WiFiClientSecure_light(2048,2048);
+  #endif
 #else // ESP32 - ESP8266
     tlsClient = new BearSSL::WiFiClientSecure_light(1024,1024);
 #endif
@@ -778,6 +791,9 @@ void MqttPublishPrefixTopicRulesProcess_P(uint32_t prefix, const char* subtopic)
 void MqttPublishTeleSensor(void) {
   // Publish tele/<device>/SENSOR default ResponseData string with optional retained
   //   then process rules
+#ifdef USE_INFLUXDB
+  InfluxDbProcess(1);        // Use a copy of ResponseData
+#endif
   MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_SENSOR), Settings->flag.mqtt_sensor_retain);  // CMND_SENSORRETAIN
 }
 
@@ -910,13 +926,22 @@ void MqttConnected(void) {
       MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "1"), Settings->flag5.mqtt_info_retain);
 #ifdef USE_WEBSERVER
       if (Settings->webserver) {
+        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\""),
+          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER));
+        if (static_cast<uint32_t>(WiFi.localIP()) != 0) {
+          ResponseAppend_P(PSTR(",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%_I\""),
+            TasmotaGlobal.hostname, (uint32_t)WiFi.localIP());
 #if LWIP_IPV6
-        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%s\",\"IPv6Address\":\"%s\"}}"),
-          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER), NetworkHostname(), NetworkAddress().toString().c_str(), WifiGetIPv6().c_str(), Settings->flag5.mqtt_info_retain);
-#else
-        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%s\"}}"),
-          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER), NetworkHostname(), NetworkAddress().toString().c_str(), Settings->flag5.mqtt_info_retain);
-#endif // LWIP_IPV6 = 1
+          ResponseAppend_P(PSTR(",\"IPv6Address\":\"%s\""), WifiGetIPv6().c_str());
+#endif  // LWIP_IPV6 = 1
+        }
+#if defined(ESP32) && CONFIG_IDF_TARGET_ESP32 && defined(USE_ETHERNET)
+        if (static_cast<uint32_t>(EthernetLocalIP()) != 0) {
+          ResponseAppend_P(PSTR(",\"Ethernet\":{\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%_I\"}"),
+            EthernetHostname(), (uint32_t)EthernetLocalIP());
+        }
+#endif  // USE_ETHERNET
+        ResponseJsonEndEnd();
         MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "2"), Settings->flag5.mqtt_info_retain);
       }
 #endif  // USE_WEBSERVER
@@ -926,7 +951,7 @@ void MqttConnected(void) {
       } else {
         ResponseAppend_P(PSTR("\"%s\""), GetResetReason().c_str());
       }
-      ResponseJsonEndEnd();
+      ResponseAppend_P(PSTR(",\"" D_JSON_BOOTCOUNT "\":%d}}"), Settings->bootcount +1);
       MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "3"), Settings->flag5.mqtt_info_retain);
     }
 
@@ -1405,7 +1430,6 @@ void CmndMqttClient(void) {
 void CmndFullTopic(void) {
   if (XdrvMailbox.data_len > 0) {
     MakeValidMqtt(1, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     char stemp1[TOPSZ];
     strlcpy(stemp1, (SC_DEFAULT == Shortcut()) ? MQTT_FULLTOPIC : XdrvMailbox.data, sizeof(stemp1));
     if (strcmp(stemp1, SettingsText(SET_MQTT_FULLTOPIC))) {
@@ -1460,7 +1484,10 @@ void CmndGroupTopic(void) {
     if (XdrvMailbox.data_len > 0) {
       uint32_t settings_text_index = (1 == XdrvMailbox.index) ? SET_MQTT_GRP_TOPIC : SET_MQTT_GRP_TOPIC2 + XdrvMailbox.index - 2;
       MakeValidMqtt(0, XdrvMailbox.data);
-      if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
+      if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_topic)) {
+        AddLog(LOG_LEVEL_INFO, PSTR("MQT: Error: GroupTopic must differ from Topic"));
+        SetShortcutDefault();
+      }
       SettingsUpdateText(settings_text_index, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? PSTR(MQTT_GRPTOPIC) : XdrvMailbox.data);
 
       // Eliminate duplicates, have at least one and fill from index 1
@@ -1507,7 +1534,6 @@ void CmndGroupTopic(void) {
 void CmndTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     char stemp1[TOPSZ];
     strlcpy(stemp1, (SC_DEFAULT == Shortcut()) ? MQTT_TOPIC : XdrvMailbox.data, sizeof(stemp1));
     if (strcmp(stemp1, SettingsText(SET_MQTT_TOPIC))) {
@@ -1523,7 +1549,6 @@ void CmndTopic(void) {
 void CmndButtonTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     switch (Shortcut()) {
       case SC_CLEAR: SettingsUpdateText(SET_MQTT_BUTTON_TOPIC, ""); break;
       case SC_DEFAULT: SettingsUpdateText(SET_MQTT_BUTTON_TOPIC, TasmotaGlobal.mqtt_topic); break;
@@ -1537,7 +1562,6 @@ void CmndButtonTopic(void) {
 void CmndSwitchTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     switch (Shortcut()) {
       case SC_CLEAR: SettingsUpdateText(SET_MQTT_SWITCH_TOPIC, ""); break;
       case SC_DEFAULT: SettingsUpdateText(SET_MQTT_SWITCH_TOPIC, TasmotaGlobal.mqtt_topic); break;

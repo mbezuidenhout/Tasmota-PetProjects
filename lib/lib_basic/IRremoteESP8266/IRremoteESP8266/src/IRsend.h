@@ -42,78 +42,78 @@ const uint32_t kDefaultMessageGap = 100000;
 
 /// Enumerators and Structures for the Common A/C API.
 namespace stdAc {
-  /// Common A/C settings for A/C operating modes.
-  enum class opmode_t {
-    kOff  = -1,
-    kAuto =  0,
-    kCool =  1,
-    kHeat =  2,
-    kDry  =  3,
-    kFan  =  4,
-    // Add new entries before this one, and update it to point to the last entry
-    kLastOpmodeEnum = kFan,
-  };
+/// Common A/C settings for A/C operating modes.
+enum class opmode_t {
+  kOff  = -1,
+  kAuto =  0,
+  kCool =  1,
+  kHeat =  2,
+  kDry  =  3,
+  kFan  =  4,
+  // Add new entries before this one, and update it to point to the last entry
+  kLastOpmodeEnum = kFan,
+};
 
-  /// Common A/C settings for Fan Speeds.
-  enum class fanspeed_t {
-    kAuto =   0,
-    kMin =    1,
-    kLow =    2,
-    kMedium = 3,
-    kHigh =   4,
-    kMax =    5,
-    // Add new entries before this one, and update it to point to the last entry
-    kLastFanspeedEnum = kMax,
-  };
+/// Common A/C settings for Fan Speeds.
+enum class fanspeed_t {
+  kAuto =   0,
+  kMin =    1,
+  kLow =    2,
+  kMedium = 3,
+  kHigh =   4,
+  kMax =    5,
+  // Add new entries before this one, and update it to point to the last entry
+  kLastFanspeedEnum = kMax,
+};
 
-  /// Common A/C settings for Vertical Swing.
-  enum class swingv_t {
-    kOff =    -1,
-    kAuto =    0,
-    kHighest = 1,
-    kHigh =    2,
-    kMiddle =  3,
-    kLow =     4,
-    kLowest =  5,
-    // Add new entries before this one, and update it to point to the last entry
-    kLastSwingvEnum = kLowest,
-  };
+/// Common A/C settings for Vertical Swing.
+enum class swingv_t {
+  kOff =    -1,
+  kAuto =    0,
+  kHighest = 1,
+  kHigh =    2,
+  kMiddle =  3,
+  kLow =     4,
+  kLowest =  5,
+  // Add new entries before this one, and update it to point to the last entry
+  kLastSwingvEnum = kLowest,
+};
 
-  /// Common A/C settings for Horizontal Swing.
-  enum class swingh_t {
-    kOff =     -1,
-    kAuto =     0,  // a.k.a. On.
-    kLeftMax =  1,
-    kLeft =     2,
-    kMiddle =   3,
-    kRight =    4,
-    kRightMax = 5,
-    kWide =     6,  // a.k.a. left & right at the same time.
-    // Add new entries before this one, and update it to point to the last entry
-    kLastSwinghEnum = kWide,
-  };
+/// Common A/C settings for Horizontal Swing.
+enum class swingh_t {
+  kOff =     -1,
+  kAuto =     0,  // a.k.a. On.
+  kLeftMax =  1,
+  kLeft =     2,
+  kMiddle =   3,
+  kRight =    4,
+  kRightMax = 5,
+  kWide =     6,  // a.k.a. left & right at the same time.
+  // Add new entries before this one, and update it to point to the last entry
+  kLastSwinghEnum = kWide,
+};
 
-  /// Structure to hold a common A/C state.
-  typedef struct {
-    decode_type_t protocol;
-    int16_t model;
-    bool power;
-    stdAc::opmode_t mode;
-    float degrees;
-    bool celsius;
-    stdAc::fanspeed_t fanspeed;
-    stdAc::swingv_t swingv;
-    stdAc::swingh_t swingh;
-    bool quiet;
-    bool turbo;
-    bool econo;
-    bool light;
-    bool filter;
-    bool clean;
-    bool beep;
-    int16_t sleep;
-    int16_t clock;
-  } state_t;
+/// Structure to hold a common A/C state.
+struct state_t {
+  decode_type_t protocol = decode_type_t::UNKNOWN;
+  int16_t model = -1;  // `-1` means unused.
+  bool power = false;
+  stdAc::opmode_t mode = stdAc::opmode_t::kOff;
+  float degrees = 25;
+  bool celsius = true;
+  stdAc::fanspeed_t fanspeed = stdAc::fanspeed_t::kAuto;
+  stdAc::swingv_t swingv = stdAc::swingv_t::kOff;
+  stdAc::swingh_t swingh = stdAc::swingh_t::kOff;
+  bool quiet = false;
+  bool turbo = false;
+  bool econo = false;
+  bool light = false;
+  bool filter = false;
+  bool clean = false;
+  bool beep = false;
+  int16_t sleep = -1;  // `-1` means off.
+  int16_t clock = -1;  // `-1` means not set.
+};
 };  // namespace stdAc
 
 /// Fujitsu A/C model numbers
@@ -172,10 +172,10 @@ enum sharp_ac_remote_model_t {
   A903 = 3,  // 820 too
 };
 
-/// TCL A/C model numbers
+/// TCL (& Teknopoint) A/C model numbers
 enum tcl_ac_remote_model_t {
   TAC09CHSD = 1,
-  GZ055BE1 = 2,
+  GZ055BE1 = 2,  // Also Teknopoint GZ01-BEJ0-000
 };
 
 /// Voltas A/C model numbers
@@ -196,6 +196,7 @@ enum lg_ac_remote_model_t {
   AKB75215403,        // (2) LG2 28-bit Protocol
   AKB74955603,        // (3) LG2 28-bit Protocol variant
   AKB73757604,        // (4) LG2 Variant of AKB74955603
+  LG6711A20083V,      // (5) Same as GE6711AR2853M, but only SwingV toggle.
 };
 
 
@@ -381,9 +382,13 @@ class IRsend {
                 uint16_t repeat = kNoRepeat);
 #endif
 #if SEND_COOLIX
-  void sendCOOLIX(uint64_t data, uint16_t nbits = kCoolixBits,
-                  uint16_t repeat = kCoolixDefaultRepeat);
-#endif
+  void sendCOOLIX(const uint64_t data, const uint16_t nbits = kCoolixBits,
+                  const uint16_t repeat = kCoolixDefaultRepeat);
+#endif  // SEND_COOLIX
+#if SEND_COOLIX48
+  void sendCoolix48(const uint64_t data, const uint16_t nbits = kCoolix48Bits,
+                    const uint16_t repeat = kCoolixDefaultRepeat);
+#endif  // SEND_COOLIX48
 #if SEND_WHYNTER
   void sendWhynter(const uint64_t data, const uint16_t nbits = kWhynterBits,
                    const uint16_t repeat = kNoRepeat);
@@ -588,6 +593,16 @@ class IRsend {
                                               // different sizes
                       const uint16_t repeat = kHitachiAcDefaultRepeat);
 #endif  // SEND_HITACHI_AC3
+#if SEND_HITACHI_AC264
+  void sendHitachiAc264(const unsigned char data[],
+                        const uint16_t nbytes = kHitachiAc264StateLength,
+                        const uint16_t repeat = kHitachiAcDefaultRepeat);
+#endif  // SEND_HITACHI_AC264
+#if SEND_HITACHI_AC296
+  void sendHitachiAc296(const unsigned char data[],
+                        const uint16_t nbytes = kHitachiAc296StateLength,
+                        const uint16_t repeat = kHitachiAcDefaultRepeat);
+#endif  // SEND_HITACHI_AC296
 #if SEND_HITACHI_AC344
   void sendHitachiAc344(const unsigned char data[],
                         const uint16_t nbytes = kHitachiAc344StateLength,
@@ -751,6 +766,11 @@ class IRsend {
   void sendKelon(const uint64_t data, const uint16_t nbits = kKelonBits,
                  const uint16_t repeat = kNoRepeat);
 #endif  // SEND_KELON
+#if SEND_KELON168
+  void sendKelon168(const unsigned char data[],
+                    const uint16_t nbytes = kKelon168StateLength,
+                    const uint16_t repeat = kNoRepeat);
+#endif  // SEND_KELON168
 #if SEND_BOSE
   void sendBose(const uint64_t data, const uint16_t nbits = kBoseBits,
                 const uint16_t repeat = kNoRepeat);

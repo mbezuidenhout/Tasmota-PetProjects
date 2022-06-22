@@ -23,8 +23,18 @@
 #include <berry.h>
 #include <LList.h>
 
+#include "be_mapping.h"
 #include "re1.5.h"
 
+#ifdef USE_BERRY_INT64
+  #include "be_int64.h"
+#endif
+
+/*********************************************************************************************\
+ * Logging for Tasmota Berry console
+ *
+ * We need to declare the the log class first since it is used in structure
+\*********************************************************************************************/
 #define BERRY_CONSOLE_CMD_DELIMITER   "\x01"
 
 class Log_line {
@@ -71,6 +81,12 @@ public:
   LList<Log_line> log;
 };
 
+/*********************************************************************************************\
+ * Berry global structure
+ *
+\*********************************************************************************************/
+class BerryLog;
+
 class BerrySupport {
 public:
   bvm *vm = nullptr;                    // berry vm
@@ -84,5 +100,7 @@ public:
 };
 BerrySupport berry;
 
+// multi-purpose serial logging
+extern "C" void serial_debug(const char * berry_buf, ...);
 
 #endif  // USE_BERRY
