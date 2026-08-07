@@ -1,7 +1,7 @@
 /*
   xnrg_08_sdm120.ino - Eastron SDM120-Modbus energy meter support for Tasmota
 
-  Copyright (C) 2021  Gennaro Tortone and Theo Arends
+  Copyright (C) 2026  Gennaro Tortone, Theo Arends, Marius Bezuidenhout
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,147 +29,312 @@
 
 // can be user defined in my_user_config.h
 #ifndef SDM120_SPEED
-  #define SDM120_SPEED      2400    // default SDM120 Modbus baud rate
+  #define SDM120_SPEED      2400    // default SDM120 baud rate: 2400, default SDM220 baud rate: 9600
 #endif
 // can be user defined in my_user_config.h
 #ifndef SDM120_ADDR
-  #define SDM120_ADDR       1       // default SDM120 Modbus address
+  #define SDM120_ADDR       1       // default SDM120/SDM220 Modbus address
+#endif
+
+#if SDM120_SPEED < 9600
+  #warning **** SDM120: Baud rates below 9600 may cause watchdog restarts ****
 #endif
 
 #include <TasmotaModbus.h>
-TasmotaModbus *Sdm120Modbus;
-
-const uint8_t sdm120_table = 8;
-const uint8_t sdm220_table = 13;
-
-const uint16_t sdm120_start_addresses[] {
-  0x0000,   // SDM120C_VOLTAGE             [V]
-  0x0006,   // SDM120C_CURRENT             [A]
-  0x000C,   // SDM120C_POWER               [W]
-  0x0012,   // SDM120C_APPARENT_POWER      [VA]
-  0x0018,   // SDM120C_REACTIVE_POWER      [VAR]
-  0x001E,   // SDM120C_POWER_FACTOR
-  0x0046,   // SDM120C_FREQUENCY           [Hz]
-  0x0156,   // SDM120C_TOTAL_ACTIVE_ENERGY [kWh]
-
-  0X0048,   // SDM220_IMPORT_ACTIVE        [kWh]
-  0X004A,   // SDM220_EXPORT_ACTIVE        [kWh]
-  0X004C,   // SDM220_IMPORT_REACTIVE      [kvarh]
-  0X004E,   // SDM220_EXPORT_REACTIVE      [kvarh]
-  0X0024    // SDM220_PHASE_ANGLE          [Degree]
+TasmotaModbus *Sdm120Modbus = nullptr;
+struct SDM120Block {
+  uint16_t start;
+  uint16_t count;
 };
 
+const SDM120Block sdm120_blocks[] = {
+  { 0x0000, 0x000B },  // Voltage and Current 12 registers
+  { 0x000C, 0x001A },  // Active power through phase angle 26 registers
+  { 0x0046, 0x001A },  // frequency through demand values 26 registers
+  { 0x0102, 0x0008 },  // current demands 8 registers
+  { 0x0156, 0x0004 }   // total energy 4 registers
+};
+
+constexpr uint8_t SDM120_BLOCK_COUNT = sizeof(sdm120_blocks) / sizeof(SDM120Block);
+constexpr uint16_t SDM120_MAX_BLOCK_REGISTERS = 26;
+constexpr uint16_t SDM120_MAX_RESPONSE = 5 + (SDM120_MAX_BLOCK_REGISTERS * 2);
+uint8_t sdm120_buffer[SDM120_MAX_RESPONSE] = { 0 };
+
+const uint8_t device_unknown = 0;
+const uint8_t is_sdm120 = 1;
+const uint8_t is_sdm220 = 2;
+
 struct SDM120 {
-  float total_active = 0;
-  float import_active = NAN;
+  float import_active = 0;
   float import_reactive = 0;
   float export_reactive = 0;
   float phase_angle = 0;
-  uint8_t read_state = 0;
+  float maximum_import_power_demand = 0;
+  float input_power_demand = 0;
+  float total_reactive = 0;
+  float total_power_demand = 0;
+  float maximum_power_demand = 0;
+  float export_power_demand = 0;
+  float maximum_export_power_demand = 0;
+  float current_demand = 0;
+  float maximum_current_demand = 0;
+  uint8_t block_state = 0;
   uint8_t send_retry = 0;
-  uint8_t start_address_count = sdm220_table;
+  uint8_t sdm_120_220 = 0;
+  uint8_t first_run = true;
 } Sdm120;
 
 /*********************************************************************************************/
 
+float SDM120GetFloat(const uint8_t *buffer, uint16_t block_start, uint16_t register_address)
+{
+  uint16_t register_offset = register_address - block_start;
+  uint16_t byte_offset = 3 + (register_offset * 2);
+  
+  float value;
+  
+  ((uint8_t*)&value)[3] = buffer[byte_offset + 0];
+  ((uint8_t*)&value)[2] = buffer[byte_offset + 1];
+  ((uint8_t*)&value)[1] = buffer[byte_offset + 2];
+  ((uint8_t*)&value)[0] = buffer[byte_offset + 3];
+
+  return value;
+}
+
+void SDM120DecodeBlock(uint8_t block,
+                       const uint8_t *buffer)
+{
+  const uint16_t start = sdm120_blocks[block].start;
+
+  float value;
+
+  switch (block) {
+    // --------------------------------------------------
+    // 0x0000 -> 0x000B
+    // --------------------------------------------------
+    case 0:
+      value = SDM120GetFloat(buffer, start, 0x0000);
+      if (value >= 0.0f && value <= 500.0f) {
+        Energy->voltage[0] = value;
+      }
+
+      Energy->current[0] =
+        SDM120GetFloat(buffer, start, 0x0006);
+      break;
+
+    // --------------------------------------------------
+    // 0x000C -> 0x0025
+    // --------------------------------------------------
+    case 1:
+      Energy->active_power[0] =
+        SDM120GetFloat(buffer, start, 0x000C);
+
+      Energy->apparent_power[0] =
+        SDM120GetFloat(buffer, start, 0x0012);
+
+      Energy->reactive_power[0] =
+        SDM120GetFloat(buffer, start, 0x0018);
+
+
+      value = SDM120GetFloat(buffer, start, 0x001E);
+      if (value >= -1.0f && value <= 1.0f) {
+        Energy->power_factor[0] = value;
+      }
+
+      // SDM220 phase angle
+      value = SDM120GetFloat(buffer, start, 0x0024);
+      if (value >= -90.0f && value <= 90.0f) {
+        Sdm120.phase_angle = value;
+      }
+      break;
+
+    // --------------------------------------------------
+    // 0x0046 -> 0x005F
+    // --------------------------------------------------
+    case 2:
+      value = SDM120GetFloat(buffer, start, 0x0046);
+      if (value >= 0.0f && value <= 100.0f) {
+        Energy->frequency[0] = value;
+      }
+
+      Sdm120.import_active =
+        SDM120GetFloat(buffer, start, 0x0048);
+
+      Energy->export_active[0] =
+        SDM120GetFloat(buffer, start, 0x004A);
+
+      Sdm120.import_reactive =
+        SDM120GetFloat(buffer, start, 0x004C);
+
+      Sdm120.export_reactive =
+        SDM120GetFloat(buffer, start, 0x004E);
+
+      Sdm120.total_power_demand =
+        SDM120GetFloat(buffer, start, 0x0054);
+
+      Sdm120.maximum_power_demand =
+        SDM120GetFloat(buffer, start, 0x0056);
+
+      Sdm120.input_power_demand =
+        SDM120GetFloat(buffer, start, 0x0058);
+
+      Sdm120.maximum_import_power_demand =
+        SDM120GetFloat(buffer, start, 0x005A);
+
+      Sdm120.export_power_demand =
+        SDM120GetFloat(buffer, start, 0x005C);
+
+      Sdm120.maximum_export_power_demand =
+        SDM120GetFloat(buffer, start, 0x005E);
+
+      break;
+
+
+    // --------------------------------------------------
+    // 0x0102 -> 0x0109
+    // --------------------------------------------------
+    case 3:
+
+      Sdm120.current_demand =
+        SDM120GetFloat(buffer, start, 0x0102);
+
+      Sdm120.maximum_current_demand =
+        SDM120GetFloat(buffer, start, 0x0108);
+
+      break;
+
+
+    // --------------------------------------------------
+    // 0x0156 -> 0x0159
+    // --------------------------------------------------
+    case 4:
+
+      Energy->import_active[0] =
+        SDM120GetFloat(buffer, start, 0x0156);
+
+      Sdm120.total_reactive =
+        SDM120GetFloat(buffer, start, 0x0158);
+
+      EnergyUpdateTotal();
+
+      break;
+  }
+}
+
 void SDM120Every250ms(void)
 {
+  if (nullptr == Sdm120Modbus || nullptr == Energy) {
+    return;
+  }
+
   bool data_ready = Sdm120Modbus->ReceiveReady();
 
   if (data_ready) {
-    uint8_t buffer[14];  // At least 5 + (2 * 2) = 9
 
-    uint32_t error = Sdm120Modbus->ReceiveBuffer(buffer, 2);
-    AddLogBuffer(LOG_LEVEL_DEBUG_MORE, buffer, Sdm120Modbus->ReceiveCount());
+    const SDM120Block &block =
+        sdm120_blocks[Sdm120.block_state];
+
+    uint32_t error =
+        Sdm120Modbus->ReceiveBuffer(
+            sdm120_buffer,
+            block.count
+        );
 
     if (error) {
-      AddLog(LOG_LEVEL_DEBUG, PSTR("SDM: SDM120 error %d"), error);
+
+      AddLog(
+        LOG_LEVEL_DEBUG,
+        PSTR("SDM: Modbus error %u from block 0x%04X (%u registers)"),
+        error,
+        block.start,
+        block.count
+      );
+
     } else {
-      Energy->data_valid[0] = 0;
 
-      //  0  1  2  3  4  5  6  7  8
-      // SA FC BC Fh Fl Sh Sl Cl Ch
-      // 01 04 04 43 66 33 34 1B 38 = 230.2 Volt
-      float value;
-      ((uint8_t*)&value)[3] = buffer[3];   // Get float values
-      ((uint8_t*)&value)[2] = buffer[4];
-      ((uint8_t*)&value)[1] = buffer[5];
-      ((uint8_t*)&value)[0] = buffer[6];
+      const uint16_t received =
+          Sdm120Modbus->ReceiveCount();
 
-      switch(Sdm120.read_state) {
-        case 0:
-          Energy->voltage[0] = value;          // 230.2 V
-          break;
+      AddLogBuffer(
+        LOG_LEVEL_DEBUG_MORE,
+        sdm120_buffer,
+        received
+      );
 
-        case 1:
-          Energy->current[0]  = value;         // 1.260 A
-          break;
+      const uint16_t expected =
+          5 + (block.count * 2);
 
-        case 2:
-          Energy->active_power[0] = value;     // -196.3 W
-          break;
+      if (received < expected) {
 
-        case 3:
-          Energy->apparent_power[0] = value;   // 223.4 VA
-          break;
+        AddLog(
+          LOG_LEVEL_DEBUG,
+          PSTR("SDM: Invalid response length %u, expected %u"),
+          received,
+          expected
+        );
 
-        case 4:
-          Energy->reactive_power[0] = value;   // 92.2
-          break;
+      } else {
 
-        case 5:
-          Energy->power_factor[0] = value;     // -0.91
-          break;
+        Energy->data_valid[0] = 0;
 
-        case 6:
-          Energy->frequency[0] = value;        // 50.0 Hz
-          break;
+        SDM120DecodeBlock(
+          Sdm120.block_state,
+          sdm120_buffer
+        );
 
-        case 7:
-          Sdm120.total_active = value;     // 484.708 kWh = import_active + export_active
-          break;
+        Sdm120.block_state++;
 
-        case 8:
-          Sdm120.import_active = value;    // 478.492 kWh
-          break;
+        if (Sdm120.block_state >= SDM120_BLOCK_COUNT) {
+          Sdm120.block_state = 0;
 
-        case 9:
-          Energy->export_active[0] = value;    // 6.216 kWh
-          break;
+          /*
+           * Device detection can happen here because
+           * an entire measurement cycle has completed.
+           */
+          if (Sdm120.sdm_120_220 == device_unknown) {
 
-        case 10:
-          Sdm120.import_reactive = value;  // 172.750 kvarh
-          break;
+            if ((Sdm120.phase_angle == 0) &&
+                (Sdm120.maximum_import_power_demand > 0)) {
 
-        case 11:
-          Sdm120.export_reactive = value;  // 2.844 kvarh
-          break;
+              Sdm120.sdm_120_220 = is_sdm120;
 
-        case 12:
-          Sdm120.phase_angle = value;      // 0.00 Deg
-          break;
-      }
+              AddLog(
+                LOG_LEVEL_INFO,
+                PSTR("SDM: Device determined to be SDM120")
+              );
 
-      Sdm120.read_state++;
-      if (Sdm120.read_state == Sdm120.start_address_count) {
-        Sdm120.read_state = 0;
+            } else {
 
-        if (Sdm120.start_address_count > sdm120_table) {
-          if (!isnan(Sdm120.import_active)) {
-            Sdm120.total_active = Sdm120.import_active;
-          } else {
-            Sdm120.start_address_count = sdm120_table;  // No extended registers available
+              Sdm120.sdm_120_220 = is_sdm220;
+
+              AddLog(
+                LOG_LEVEL_INFO,
+                PSTR("SDM: Device determined to be SDM220")
+              );
+            }
           }
         }
-        Energy->import_active[0] = Sdm120.total_active;  // 484.708 kWh
-        EnergyUpdateTotal();  // 484.708 kWh
       }
     }
-  } // end data ready
+  }
 
-  if (0 == Sdm120.send_retry || data_ready) {
+  /*
+   * Send next block request
+   */
+  if ((0 == Sdm120.send_retry) || data_ready) {
+
     Sdm120.send_retry = 5;
-    Sdm120Modbus->Send(SDM120_ADDR, 0x04, sdm120_start_addresses[Sdm120.read_state], 2);
+
+    const SDM120Block &block =
+        sdm120_blocks[Sdm120.block_state];
+
+    Sdm120Modbus->Send(
+      SDM120_ADDR,
+      0x04,
+      block.start,
+      block.count
+    );
+
   } else {
     Sdm120.send_retry--;
   }
@@ -177,7 +342,16 @@ void SDM120Every250ms(void)
 
 void Sdm120SnsInit(void)
 {
-  Sdm120Modbus = new TasmotaModbus(Pin(GPIO_SDM120_RX), Pin(GPIO_SDM120_TX), Pin(GPIO_NRG_MBS_TX_ENA), Pin(GPIO_MBS_RX_ENA));
+  delete Sdm120Modbus;
+  Sdm120Modbus = nullptr;
+
+  Sdm120Modbus = new (std::nothrow) TasmotaModbus(Pin(GPIO_SDM120_RX), Pin(GPIO_SDM120_TX), Pin(GPIO_NRG_MBS_TX_ENA), Pin(GPIO_MBS_RX_ENA));
+  if (nullptr == Sdm120Modbus) {
+    AddLog(LOG_LEVEL_ERROR, PSTR("SDM: Modbus allocation failed"));
+    TasmotaGlobal.energy_driver = ENERGY_NONE;
+    return;
+  }
+
   uint8_t result = Sdm120Modbus->Begin(SDM120_SPEED);
   if (result) {
     if (2 == result) { ClaimSerial(); }
@@ -185,6 +359,8 @@ void Sdm120SnsInit(void)
     AddLog(LOG_LEVEL_DEBUG, PSTR("SDM: Serial UART%d"), Sdm120Modbus->getUart());
 #endif
   } else {
+    delete Sdm120Modbus;
+    Sdm120Modbus = nullptr;
     TasmotaGlobal.energy_driver = ENERGY_NONE;
   }
 }
@@ -198,27 +374,31 @@ void Sdm120DrvInit(void)
 
 void Sdm220Reset(void)
 {
-  if (isnan(Sdm120.import_active)) { return; }
+  if (Sdm120.sdm_120_220 != is_sdm220) { return; }
 
-  Sdm120.import_active = 0;
-  Sdm120.import_reactive = 0;
-  Sdm120.export_reactive = 0;
-  Sdm120.phase_angle = 0;
+  Sdm120.phase_angle = Sdm120.import_active = Sdm120.import_reactive = Sdm120.export_reactive = 0;
 }
 
 void Sdm220Show(bool json) {
-  if (isnan(Sdm120.import_active)) { return; }
-
   if (json) {
     ResponseAppend_P(PSTR(",\"" D_JSON_IMPORT_ACTIVE "\":%s"), EnergyFmt(&Sdm120.import_active, Settings->flag2.energy_resolution));
     ResponseAppend_P(PSTR(",\"" D_JSON_IMPORT_REACTIVE "\":%s"), EnergyFmt(&Sdm120.import_reactive, Settings->flag2.energy_resolution));
     ResponseAppend_P(PSTR(",\"" D_JSON_EXPORT_REACTIVE "\":%s"), EnergyFmt(&Sdm120.export_reactive, Settings->flag2.energy_resolution));
-    ResponseAppend_P(PSTR(",\"" D_JSON_PHASE_ANGLE "\":%s"), EnergyFmt(&Sdm120.phase_angle, 2));
+    if (Sdm120.sdm_120_220 != is_sdm220) {
+      ResponseAppend_P(PSTR(",\"" D_JSON_PHASE_ANGLE "\":%s"), EnergyFmt(&Sdm120.phase_angle, 2));
+    }
 #ifdef USE_WEBSERVER
   } else {
+    // SDM120 / SDM220
     WSContentSend_PD(HTTP_SNS_IMPORT_REACTIVE, WebEnergyFmt(&Sdm120.import_reactive, Settings->flag2.energy_resolution, 2));
     WSContentSend_PD(HTTP_SNS_EXPORT_REACTIVE, WebEnergyFmt(&Sdm120.export_reactive, Settings->flag2.energy_resolution, 2));
-    WSContentSend_PD(HTTP_SNS_PHASE_ANGLE, WebEnergyFmt(&Sdm120.phase_angle, 2));
+    WSContentSend_PD(HTTP_SNS_TOTAL_REACTIVE, WebEnergyFmt(&Sdm120.total_reactive, Settings->flag2.energy_resolution));
+    WSContentSend_PD(HTTP_SNS_MAX_POWER, WebEnergyFmt(&Sdm120.maximum_power_demand, Settings->flag2.wattage_resolution));
+
+    // SDM220
+    if (Sdm120.sdm_120_220 == is_sdm220) {
+      WSContentSend_PD(HTTP_SNS_PHASE_ANGLE, WebEnergyFmt(&Sdm120.phase_angle, 2));
+    }
 #endif  // USE_WEBSERVER
   }
 }
