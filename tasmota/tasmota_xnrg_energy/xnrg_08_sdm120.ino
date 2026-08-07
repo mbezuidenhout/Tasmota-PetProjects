@@ -51,8 +51,8 @@ const SDM120Block sdm120_blocks[] = {
   { 0x0000, 0x000B },  // Voltage and Current 12 registers
   { 0x000C, 0x001A },  // Active power through phase angle 26 registers
   { 0x0046, 0x001A },  // frequency through demand values 26 registers
-  { 0x0102, 0x0008 },  // current demands 8 registers
   { 0x0156, 0x0004 }   // total energy 4 registers
+//  { 0x0102, 0x0008 },  // current demands 8 registers
 };
 
 constexpr uint8_t SDM120_BLOCK_COUNT = sizeof(sdm120_blocks) / sizeof(SDM120Block);
@@ -70,14 +70,14 @@ struct SDM120 {
   float export_reactive = 0;
   float phase_angle = 0;
   float maximum_import_power_demand = 0;
-  float input_power_demand = 0;
+//  float input_power_demand = 0;
   float total_reactive = 0;
-  float total_power_demand = 0;
+//  float total_power_demand = 0;
   float maximum_power_demand = 0;
-  float export_power_demand = 0;
-  float maximum_export_power_demand = 0;
-  float current_demand = 0;
-  float maximum_current_demand = 0;
+//  float export_power_demand = 0;
+//  float maximum_export_power_demand = 0;
+//  float current_demand = 0;
+//  float maximum_current_demand = 0;
   uint8_t block_state = 0;
   uint8_t send_retry = 0;
   uint8_t sdm_120_220 = 0;
@@ -169,45 +169,30 @@ void SDM120DecodeBlock(uint8_t block,
       Sdm120.export_reactive =
         SDM120GetFloat(buffer, start, 0x004E);
 
-      Sdm120.total_power_demand =
-        SDM120GetFloat(buffer, start, 0x0054);
+//      Sdm120.total_power_demand =
+//        SDM120GetFloat(buffer, start, 0x0054);
 
       Sdm120.maximum_power_demand =
         SDM120GetFloat(buffer, start, 0x0056);
 
-      Sdm120.input_power_demand =
-        SDM120GetFloat(buffer, start, 0x0058);
+//      Sdm120.input_power_demand =
+//        SDM120GetFloat(buffer, start, 0x0058);
 
       Sdm120.maximum_import_power_demand =
         SDM120GetFloat(buffer, start, 0x005A);
 
-      Sdm120.export_power_demand =
-        SDM120GetFloat(buffer, start, 0x005C);
+//      Sdm120.export_power_demand =
+//        SDM120GetFloat(buffer, start, 0x005C);
 
-      Sdm120.maximum_export_power_demand =
-        SDM120GetFloat(buffer, start, 0x005E);
-
-      break;
-
-
-    // --------------------------------------------------
-    // 0x0102 -> 0x0109
-    // --------------------------------------------------
-    case 3:
-
-      Sdm120.current_demand =
-        SDM120GetFloat(buffer, start, 0x0102);
-
-      Sdm120.maximum_current_demand =
-        SDM120GetFloat(buffer, start, 0x0108);
+//      Sdm120.maximum_export_power_demand =
+//        SDM120GetFloat(buffer, start, 0x005E);
 
       break;
-
 
     // --------------------------------------------------
     // 0x0156 -> 0x0159
     // --------------------------------------------------
-    case 4:
+    case 3:
 
       Energy->import_active[0] =
         SDM120GetFloat(buffer, start, 0x0156);
@@ -218,6 +203,21 @@ void SDM120DecodeBlock(uint8_t block,
       EnergyUpdateTotal();
 
       break;
+    
+    // --------------------------------------------------
+    // 0x0102 -> 0x0109
+    // --------------------------------------------------
+    /** Future expansion
+    case 3:
+
+      Sdm120.current_demand =
+        SDM120GetFloat(buffer, start, 0x0102);
+
+      Sdm120.maximum_current_demand =
+        SDM120GetFloat(buffer, start, 0x0108);
+
+      break;
+     */
   }
 }
 
